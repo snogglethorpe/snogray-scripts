@@ -1,0 +1,21 @@
+Various handy shell scripts for use with Snogray renderer.
+
+runsnog
+	Run snogray with the given args, and write an additional
+	".snlog" file containing some meta-data (command-line args
+	etc) and a transcript of the run.  Has special support for
+	restarting an aborted run.  The .snlog file will have the same
+	basename (and directory) as the output image file.
+
+runcmpsnogs
+	Run two different versions of snogray multiple times with the
+	same arguments, using "runsnog" to record the runs into .snlog
+	files.  "sumsnoglog" can then be used on the resulting .snlog
+	files to produce a summary of the average execution times for
+	both.
+
+sumsnoglog
+	Analyze .snlog files produced by "runsnog" (maybe indirectly
+	via runcmpsnogs), and produce a summary of the average
+	execution times (broken down by "tag", and into loading,
+	rendering, etc, times).

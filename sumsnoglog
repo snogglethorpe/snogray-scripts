@@ -1,0 +1,314 @@
+#!/bin/sh
+# sumsnoglog -- Summarize snogray log (.snlog) files produced by "runsnog"
+#
+#  Copyright (C) 2013  Miles Bader <miles@gnu.org>
+#
+# This source code is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation; either version 3, or (at
+# your option) any later version.  See the file COPYING for more details.
+#
+# Written by Miles Bader <miles@gnu.org>
+#
+
+AWK=/usr/bin/nawk
+
+$AWK '
+BEGIN { tag = 0; num_tags = 0; in_hdr = 0 }
+
+function sort1 (arr1, len   ,tmp)
+{
+  for (i = 0; i < len; i++)
+    for (j = i + 1; j < len; j++)
+      if (arr1[i] > arr1[j])
+	{
+	  tmp = arr1[i]
+	  arr1[i] = arr1[j]
+	  arr1[j] = tmp
+        }
+}
+
+
+function finish_log()
+{
+  if (tag)
+    sample_counts[tag]++
+}
+
+$1 == "cmd:" {
+  finish_log()
+  in_hdr = 1
+
+  # make default tag from command name
+  tag = $2
+  sub (/^.*\//, "", tag)
+  sub (/,*snogray-/, "", tag)
+}
+
+# must follow a "cmd:" line
+$1 == "tag:" {
+  tag = $2
+}
+
+# end of headers
+in_hdr && $0 ~ /^ *$/ {
+  in_hdr = 0
+  if (tag)
+    tag = tag
+  if (! (tag in tags)) {
+    tags[tag] = tag
+    ordered_tags[num_tags++] = tag
+  }
+}
+
+in_hdr { next }
+
+function time_str_to_secs(ts    ,m,s)
+{
+  m = ts
+  sub (/ min.*/, "", m)
+  if (m == ts)
+    m = 0
+  s = ts
+  sub (/.* min, */, "", s)
+  sub (/ sec.*/, "", s)
+  if (s == ts)
+    s = 0
+  s += m * 60
+  return s
+}
+
+function add_time(type, var, kind, t)
+{
+  time_count[type, var, kind] ++
+
+  time_sum[type, var, kind] += t
+  time_sq_sum[type, var, kind] += t*t
+
+  if (time_count[type, var, kind] == 1 || time_min[type, var, kind] > t)
+    time_min[type, var, kind] = t
+  if (time_count[type, var, kind] == 1 || time_max[type, var, kind] < t)
+    time_max[type, var, kind] = t
+}
+
+function accum_cpu_time(ts, type    ,ut,st)
+{
+  ut = ts
+  sub (/ *\(.*$/, "", ut)
+  if (ut == "")
+    ut = 0
+  else
+    ut = time_str_to_secs(ut)
+
+  if (ts ~ /\(system/) {
+    st = ts
+    sub (/.*\(system /, "", st)
+    sub (/\).*/, "", st)
+    if (st == "")
+      st = 0
+    else
+      st = time_str_to_secs(st)
+  } else
+    st = 0
+
+  add_time(type, tag, "user", ut)
+  add_time(type, tag, "sys", st)
+}
+
+function accum_elapsed_time(ts, type)
+{
+  sub (/ *\(.*$/, "", ts)
+  if (ts == "")
+    ts = 0
+  else
+    ts = time_str_to_secs(ts)
+
+  add_time(type, tag, "elapsed", ts)
+}
+
+/scene def cpu/ {
+  t = $0
+  sub (/^.*: */, "", t)
+  accum_cpu_time(t, "scene def")
+}
+
+/setup cpu/ {
+  t = $0
+  sub (/^.*: */, "", t)
+  accum_cpu_time(t, "setup")
+}
+
+/rendering cpu/ {
+  t = $0
+  sub (/^.*: */, "", t)
+  accum_cpu_time(t, "render")
+}
+
+/total elapsed/ {
+  t = $0
+  sub (/^.*: */, "", t)
+  accum_elapsed_time(t, "total")
+}
+
+/max working set/ {
+  maxrss = $0
+  sub (/^.*: */, "", maxrss)
+  sub (/ *MB$/, "", maxrss)
+  gsub (/,/, "", maxrss) 
+  maxrss_sum[tag] += maxrss
+  maxrss_count[tag]++
+}
+
+# (was for gtime output)
+# /user.*system.*elapsed/ {
+#   u = $1
+#   sub (/user/, "", u)
+#
+#   s = $2
+#   sub (/system/, "", s)
+#
+#   e = $3
+#   em = e
+#   sub (/:.*/, "", em)
+#   es = e
+#   sub (/.*:/, "", es)
+#   sub (/elapsed/, "", es)
+#   e = em * 60 + es
+#
+#   add_time("total", tag, "user", u)
+#   add_time("total", tag, "sys", s)
+#   add_time("total", tag, "elapsed", e)
+# }
+
+function safe_div(num, den)
+{
+  if (den == 0)
+    return 0
+  else
+    return num / den;
+}
+
+function time_str(type, tag, kind, _default, include_range    ,sum,N,avg,ts,min,max,sd)
+{
+  N = time_count[type, tag, kind]
+  sum = time_sum[type, tag, kind]
+
+  avg = safe_div(sum, N)
+  if (avg == 0)
+    return _default
+  else
+    {
+      ts =  sprintf ("%.1f", avg)
+
+      if (include_range)
+	{
+	  # min = time_min[type, tag, kind]
+	  # max = time_max[type, tag, kind]
+	  # if (max - min > 0.1)
+	  #   ts = ts "±" sprintf("%.1f", (max - min) / 2)
+	  sd = (time_sq_sum[type, tag, kind] / N - 2*avg*sum / N + avg*avg)
+	  if (sd > 0)
+	    sd = sqrt(sd)
+	  else
+	    sd = 0
+	  #if (sd > 0.1)
+	    ts = ts "~" sprintf ("%.1f", sd)
+	}
+
+      ts = ts "s"
+
+      return ts
+    }
+}
+
+function cpu_time_str(type, tag    ,uts,sts)
+{
+  uts = time_str(type,tag, "user", "-", 1)
+  sts = time_str(type,tag, "sys", 0, 0)
+
+  if (sts)
+    return uts " (+" sts ")"
+  else
+    return uts
+}
+
+function elapsed_time_str(type, tag    ,t)
+{
+  return time_str(type, tag, "elapsed", "-", 1)
+}
+
+# adds a comma before the last three digits if NUM is greater than 1000
+function simple_commmify(num)
+{
+  num = int (num)
+  if (num > 1000)
+    return sprintf ("%d,%03d", int (num / 1000), num % 1000)
+  else
+    return num ""
+}
+
+END {
+  finish_log()
+
+  sort1(ordered_tags, num_tags)
+
+  for (tag_index = 0;
+       tag_index < num_tags;
+       tag_index++)
+  {
+    vlen = length (ordered_tags[tag_index])
+    if (vlen > max_tag_len)
+      max_tag_len = vlen
+  }
+
+  printf ("%-*s %19s %19s %11s %8s\n",
+	  max_tag_len, "Tag",
+	  "Scene def CPU",
+	  "Rendering CPU",
+	  "Elapsed",
+	  "MaxRSS")
+  print "------------------------------------------------------------------------------"
+  for (tag_index = 0;
+       tag_index < num_tags;
+       tag_index++)
+  {
+    tag = ordered_tags[tag_index]
+
+    printf ("%-*s %19s %19s %11s %8s\n",
+	    max_tag_len, tag,
+	    cpu_time_str("scene def", tag),
+	    cpu_time_str("render", tag),
+	    elapsed_time_str("total", tag),
+	    simple_commmify(safe_div(maxrss_sum[tag], maxrss_count[tag])) "MB")
+  }
+
+  print ""
+
+  for (tag in sample_counts)
+    sample_count_counts[sample_counts[tag]]++
+
+  most_common_sample_count = 0
+  most_common_sample_count_count = 0
+  multiple_sample_counts = 0
+  for (sample_count in sample_count_counts) {
+    if (most_common_sample_count && sample_count != most_common_sample_count)
+      multiple_sample_counts = 1
+
+    if (sample_count_counts[sample_count] > most_common_sample_count_count)
+    {
+      most_common_sample_count = sample_count
+      most_common_sample_count_count = sample_count_counts[sample_count]
+    }
+  }
+
+  print ("* Samples: " most_common_sample_count)
+  if (multiple_sample_counts) {
+    print "*   exceptions:"
+    for (tag in sample_counts)
+      if (sample_counts[tag] != most_common_sample_count)
+	print "*     " tag ": " sample_counts[tag]
+  }
+
+  print "* CPU times are in the form \"user (+sys)\"; standard deviation follows \"~\""
+}
+' "$@"

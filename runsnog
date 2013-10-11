@@ -1,0 +1,183 @@
+#!/bin/bash
+# runsnog -- Run snogray and write an additional log file
+#
+#  Copyright (C) 2013  Miles Bader <miles@gnu.org>
+#
+# This source code is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation; either version 3, or (at
+# your option) any later version.  See the file COPYING for more details.
+#
+# Written by Miles Bader <miles@gnu.org>
+#
+
+AWK=/usr/bin/nawk
+
+me=`basename "$0"`
+
+usage () {
+  echo "Usage: $me [OPTION...] SNOGRAY_CMD [SNOGRAY_OPTION...] SCENE_FILE OUTPUT_IMAGE_FILE"
+  echo "   or: $me --continue STAT_FILE"
+  exit ${1:-1}
+}
+err () {
+  echo 1>&2 "$me: $1"
+  exit 1
+}
+
+test $# -eq 0 && usage
+
+stat_file_dir=''
+note=''
+continue=no
+time=no
+while :; do
+  case "$1" in
+    -t|--time)
+      time=yes; shift;;
+    -s|--stat-dir|--stat-file-dir)
+      stat_file_dir="$2"; shift 2;;
+    -s*)
+      stat_file_dir=`echo "$1" | sed 's/^..//'`; shift;;
+    --stat-dir=*|--stat-file-dir=*)
+      stat_file_dir=`echo "$1" | sed 's/^[^=]*=//'`; shift;;
+    --note) note="$2"; shift 2;;
+    --note=*)
+      note=`echo "$1" | sed 's/^[^=]*=//'`; shift;;
+    --tag) tag="$2"; shift 2;;
+    --tag=*)
+      tag=`echo "$1" | sed 's/^[^=]*=//'`; shift;;
+    --continue|-C)
+      continue=yes; shift;;
+    --help)
+      usage 0;;
+    -*)
+      err "$1: unknown option";;
+    *)
+      break;;
+  esac
+done
+
+if test $continue = no; then
+  snogray="$1"
+
+  last_arg=""
+  for A; do last_arg="$A"; done
+
+  output_file="$last_arg"
+
+  case "$output_file" in
+    *.exr|*.png|*.jpg) ;;
+    *) err "$output_file: unknown output file type";;
+  esac
+
+  output_file_base=`echo "$output_file" | sed 's@[.][^.]*$@@'`
+
+  stat_file="$output_file_base.snlog"
+  test x"$stat_file_dir" = x || stat_file="$stat_file_dir/`basename "$stat_file"`"
+  test -r "$stat_file" && err "$stat_file: stat file already exists!"
+
+  echo > "$stat_file" "cmd: $*"
+
+  test x"$tag" = x || echo >> "$stat_file" "tag: $tag"
+  test x"$note" = x || echo >> "$stat_file" "note: $note"
+
+  echo >> "$stat_file" "date: `date +'%F %T %z'`"
+
+  # compiler version etc (basically snogray --build-info output)
+  $snogray --build-info | sed 's@  @: @' >> "$stat_file"
+
+  # CPU info
+  if test -r "/proc/cpuinfo"; then
+    (
+      awk '
+	BEGIN { num_cores = 0; cpu_type = 0; cpu_clock = 0; }
+        /^[ \t]*model name[ \t]*:/ {
+	  sub (/^.*: */,"")
+	  gsub (/[(][Rr][)]/,"")
+	  gsub (/[(][Tt][Mm][)]/,"")
+	  gsub (/  */," ")
+	  gsub (/ *@ *[0-9.GgMm]*[Hh][Zz] */,"")
+	  cpu_type = $0
+	  num_cores++
+	}
+	/^[ \t]*cpu [Mm][Hh]z[ \t]*:/ {
+	  sub (/^.*: */,"")
+	  clock = ($0 + 0)
+	  if (clock > cpu_cur_clock)
+	    cpu_cur_clock = clock
+	}
+	END {
+	  cpu_max_clock = 0
+	  if ((getline cpu_max_clock < "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq") > 0)
+	    cpu_max_clock = (cpu_max_clock / 1000)
+
+	  if (cpu_type)      print "CPU-type:      " cpu_type
+	  if (num_cores)     print "CPU-cores:     " num_cores
+	  if (cpu_cur_clock) print "CPU-cur-clock: " cpu_cur_clock " MHz"
+	  if (cpu_max_clock) print "CPU-max-clock: " cpu_max_clock " MHz"
+	}
+      ' /proc/cpuinfo
+    ) >> "$stat_file"
+  fi
+
+  echo >> "$stat_file" "output-file: $output_file"
+else
+  test $# -eq 1 || usage
+
+  stat_file="$1"
+  test -r "$stat_file" || err "$stat_file: stat file not found"
+
+  cmd=`$AWK '
+      $1 == "cmd:" {
+	sub(/^cmd: */,"")
+	sub(/[ \t]+/, " --continue ")
+	print
+	exit(0)
+      }
+      ' "$stat_file"`
+  test x"$cmd" = x && err "$stat_file: no command spec"
+
+  output_file=`$AWK '$1 == "output-file:" {sub(/^output-file: */,"");print;exit(0)}' "$stat_file"`
+  test x"$output_file" = x && err "$stat_file: no output-file spec"
+  test -r "$output_file" || err "$output_file: output-file not found"
+
+  if grep -s >/dev/null '^rendering[:. ]*done' "$stat_file"; then
+    err "$stat_file: previous render completed succesfully!"
+  fi
+
+  crash_date=`$AWK '
+      $1 == "crash-date:" {sub(/^crash-date: */,"");print;exit(0)}
+      /end-date: / {sub(/.*end-date: */,"");print;exit(0)}
+      ' "$stat_file"`
+
+  (
+    sed -n '/^rendering[:.]/q;p' "$stat_file"
+    echo ""
+    echo "crash-date: $crash_date"
+    echo ""
+    echo "continue-cmd: $cmd"
+    echo "continue-date: `date +'%F %T %z'`"
+  ) > "$stat_file.runsnog-new"
+  set $cmd
+  VERSION_CONTROL=numbered mv -b "$stat_file.runsnog-new" "$stat_file"
+  echo "cmd: $cmd"
+fi
+
+echo >> "$stat_file" ""
+
+if test $time = yes; then
+  /usr/bin/time -v "$@" 2>&1 | tee >(sed 's@^.*\r@@' >> "$stat_file")
+else
+  "$@" 2>&1 | tee >(sed 's@^.*\r@@' >> "$stat_file")
+fi
+
+if grep -s >/dev/null "^rendering[:. ]*done$" "$stat_file"; then
+  echo >> "$stat_file" ""
+  echo >> "$stat_file" "end-date: `date +'%F %T %z'`"
+else
+  echo ""
+  echo >> "$stat_file" ""
+  echo >> "$stat_file" ""
+  echo >> "$stat_file" "crash-date: `date +'%F %T %z'`"
+fi

@@ -1,0 +1,98 @@
+#!/bin/sh
+# runcmpsnogs -- Run two versions of snogray multiple times for benchmarking
+#
+#  Copyright (C) 2013  Miles Bader <miles@gnu.org>
+#
+# This source code is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation; either version 3, or (at
+# your option) any later version.  See the file COPYING for more details.
+#
+# Written by Miles Bader <miles@gnu.org>
+#
+
+me=`basename "$0"`
+medir=`dirname "$0"`
+
+runsnog="$medir/runsnog"
+
+usage () {
+  echo "Usage: $me [OPTION...] SNOGRAY_EXEC_1 SNOGRAY_EXEC_2 SNOGRAY_ARGS... OUTPUT_FILE"
+  exit ${1:-1}
+}
+err () {
+  echo 1>&2 "$me: $1"
+  exit 1
+}
+
+tag1=''
+tag2=''
+runs=5
+
+while :; do
+  case "$1" in
+    --tag1)
+      tag1="$2"; shift 2;;
+    --tag1=*)
+      tag1=`echo "$1" | sed 's/^[^=]*=//'`; shift;;
+    --tag2)
+      tag2="$2"; shift 2;;
+    --tag2=*)
+      tag2=`echo "$1" | sed 's/^[^=]*=//'`; shift;;
+    -r|--runs)
+      runs="$2"; shift 2;;
+    -r*)
+      runs=`echo "$1" | sed 's/^..//'`; shift;;
+    --runs=*)
+      runs=`echo "$1" | sed 's/^[^=]*=//'`; shift;;
+    --help)
+      usage 0;;
+    -*)
+      err "$1: unknown option";;
+    *)
+      break;;
+  esac
+done
+
+test $# -gt 3 || usage
+
+snog1="$1"; shift
+test -x "$snog1" || { echo "$me: $snog1: Not an executable file"; exit 2; }
+
+snog2="$1"; shift
+test -x "$snog2" || { echo "$me: $snog2: Not an executable file"; exit 3; }
+
+# Store last shell argument in $last_arg, and remove it from the positional args
+#
+last_arg=""
+all_args_but_last_quoted=''
+for arg; do
+  all_args_but_last_quoted="$all_args_but_last_quoted '$last_arg'"
+  last_arg="$arg";
+done
+eval set -- "$all_args_but_last_quoted"
+shift  # remove bogus first arg
+
+output_file="$last_arg"
+
+case "$output_file" in
+  *.exr|*.png|*.jpg) ;;
+  *) err "$output_file: unknown output file type";;
+esac
+
+# Default tags by using the program names with any "snogray-" prefix removed.
+#
+test x"$tag1" = x && tag1=`basename "$snog1" | sed 's@^.*/@@' | sed 's@^,*snogray-*@@'`
+test x"$tag2" = x && tag2=`basename "$snog2" | sed 's@^.*/@@' | sed 's@^,*snogray-*@@'`
+
+output_file_base=`echo "$output_file" | sed 's@[.][^.]*$@@'`
+output_file_ext=`echo "$output_file" | sed 's@^.*[.]@@'`
+
+echo "Doing $runs runs..."
+for run in `seq $runs`; do
+  echo "---------------- run $run ----------------"
+  echo "---- $tag1:"
+  "$runsnog" --tag "$tag1" "$snog1" "$@" "$output_file_base-$run-$tag1.$output_file_ext"
+  echo "---- $tag2:"
+  "$runsnog" --tag "$tag2" "$snog2" "$@" "$output_file_base-$run-$tag2.$output_file_ext"
+done
